@@ -21,7 +21,8 @@ def ping(target,
          out=sys.stdout,
          match=False,
          source=None,
-         out_format='legacy'):
+         out_format='legacy',
+         ipv6=False):
     """Pings a remote host and handles the responses
 
     :param target: The remote hostname or IP address to ping
@@ -77,9 +78,8 @@ def ping(target,
             SEED_IDs.append(seed_id)
             break
 
-
     comm = executor.Communicator(target, provider, timeout, interval, socket_options=options, verbose=verbose, output=out,
-                                 seed_id=seed_id, source=source, repr_format=out_format)
+                                 seed_id=seed_id, source=source, repr_format=out_format, ipv6=ipv6)
 
     comm.run(match_payloads=match)
 

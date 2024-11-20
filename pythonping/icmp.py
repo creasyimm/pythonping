@@ -219,3 +219,185 @@ class ICMP:
             self.id, \
             self.sequence_number = struct.unpack("BBHHH", raw[20:28])
         self.payload = raw[28:]
+
+class ICMPv6Type:
+    """Represents an ICMPv6 type, as a combination of type and code
+
+    ICMPv6 Types should inherit from this class so that the code can identify them easily.
+    This is a static class, not meant to be instantiated."""
+    def __init__(self):
+        raise TypeError('ICMPv6Type may not be instantiated')
+
+
+class ICMPv6Types(ICMPv6Type):
+    """ICMPv6 Types and their associated codes"""
+
+    # 1. Destination Unreachable (Type 1)
+    class DestinationUnreachable(ICMPv6Type):
+        type_id = 1
+        NO_ROUTE_TO_DEST = (type_id, 0)
+        COMMUNICATION_PROHIBITED = (type_id, 1)
+        BEYOND_SCOPE = (type_id, 2)
+        ADDRESS_UNREACHABLE = (type_id, 3)
+        PORT_UNREACHABLE = (type_id, 4)
+        SOURCE_ADDRESS_FAILED = (type_id, 5)
+        REJECT_ROUTE = (type_id, 6)
+
+    # 2. Packet Too Big (Type 2)
+    class PacketTooBig(ICMPv6Type):
+        type_id = 2
+        PACKET_TOO_BIG = (type_id, 0)
+
+    # 3. Time Exceeded (Type 3)
+    class TimeExceeded(ICMPv6Type):
+        type_id = 3
+        HOP_LIMIT_EXCEEDED = (type_id, 0)
+        FRAGMENT_REASSEMBLY_TIME_EXCEEDED = (type_id, 1)
+
+    # 4. Parameter Problem (Type 4)
+    class ParameterProblem(ICMPv6Type):
+        type_id = 4
+        ERRONEOUS_HEADER_FIELD = (type_id, 0)
+        UNRECOGNIZED_NEXT_HEADER = (type_id, 1)
+        UNRECOGNIZED_IPV6_OPTION = (type_id, 2)
+
+    # 128. Echo Request (Type 128)
+    class EchoRequest(ICMPv6Type):
+        type_id = 128
+        ECHO_REQUEST = (type_id, 0)
+
+    # 129. Echo Reply (Type 129)
+    class EchoReply(ICMPv6Type):
+        type_id = 129
+        ECHO_REPLY = (type_id, 0)
+
+    # 133. Router Solicitation (Type 133)
+    class RouterSolicitation(ICMPv6Type):
+        type_id = 133
+        ROUTER_SOLICITATION = (type_id, 0)
+
+    # 134. Router Advertisement (Type 134)
+    class RouterAdvertisement(ICMPv6Type):
+        type_id = 134
+        ROUTER_ADVERTISEMENT = (type_id, 0)
+
+    # 135. Neighbor Solicitation (Type 135)
+    class NeighborSolicitation(ICMPv6Type):
+        type_id = 135
+        NEIGHBOR_SOLICITATION = (type_id, 0)
+
+    # 136. Neighbor Advertisement (Type 136)
+    class NeighborAdvertisement(ICMPv6Type):
+        type_id = 136
+        NEIGHBOR_ADVERTISEMENT = (type_id, 0)
+
+    # 137. Redirect Message (Type 137)
+    class Redirect(ICMPv6Type):
+        type_id = 137
+        REDIRECT = (type_id, 0)
+
+class ICMPv6:
+    """Represents an ICMPv6 packet"""
+
+    def __init__(self, message_type=128, code=0, payload=None, identifier=None, sequence_number=1):
+        """
+        Initializes an ICMPv6 packet.
+
+        :param message_type: ICMPv6 message type (default is 128 for Echo Request)
+        :param code: ICMPv6 message code (default is 0)
+        :param payload: Payload data (can be str or bytes)
+        :param identifier: Identifier for Echo Request/Reply (default is process ID)
+        :param sequence_number: Sequence number for Echo Request/Reply (default is 1)
+        """
+        self.message_type = message_type
+        self.message_code = code
+        self.checksum = 0
+        
+        if payload is None:
+            payload = bytes('ping', 'utf-8')
+        elif isinstance(payload, str):
+            payload = bytes(payload, 'utf-8')
+        self.payload = payload
+        if identifier is None:
+            identifier = os.getpid()
+        self.id = identifier & 0xFFFF  # Use lower 16 bits of process ID
+        self.sequence_number = sequence_number
+        self.received_checksum = None
+        self.raw = None
+
+    @property
+    def packet(self):
+        """Builds the raw ICMPv6 packet ready to be sent."""
+        header = self._header(check=self.expected_checksum)
+        header = header + self.payload
+        if self.raw is None:
+            self.raw = header
+        return header
+
+    def _header(self, check=0):
+        """Builds the raw ICMPv6 header.
+
+        :param check: Checksum value (default is 0)
+        :return: Packed ICMPv6 header as bytes
+        """
+        return struct.pack(
+            "!BBHHH",
+            self.message_type,
+            self.message_code,
+            check,
+            self.id,
+            self.sequence_number
+        )
+
+    @property
+    def expected_checksum(self):
+        """Calculates the expected checksum for the ICMPv6 packet."""
+        pseudo_header = b''
+        return self._checksum(pseudo_header + self._header() + self.payload)
+
+    @staticmethod
+    def _checksum(data):
+        """Calculates the checksum for the provided data."""
+        if len(data) % 2 != 0:
+            data += b'\x00'  # Padding if data length is odd
+        checksum = 0
+        for i in range(0, len(data), 2):
+            word = (data[i] << 8) + data[i + 1]
+            checksum += word
+            checksum = (checksum & 0xFFFF) + (checksum >> 16)
+        return ~checksum & 0xFFFF
+
+    @property
+    def is_valid(self):
+        """Checks if the received checksum is valid."""
+        if self.received_checksum is None:
+            return False
+        return self.expected_checksum == self.received_checksum
+
+    def __repr__(self):
+        return ' '.join('{:02x}'.format(b) for b in self.raw)
+
+    @staticmethod
+    def generate_from_raw(raw):
+        """Creates a new ICMPv6 instance from the raw bytes.
+
+        :param raw: The raw ICMPv6 packet bytes
+        :return: An ICMPv6 instance
+        """
+        packet = ICMPv6()
+        packet.unpack(raw)
+        return packet
+
+    def unpack(self, raw):
+        """Unpacks a raw ICMPv6 packet and stores it in this object.
+
+        :param raw: The raw packet, including payload
+        :type raw: bytes
+        """
+        self.raw = raw
+        self.message_type, \
+            self.message_code, \
+            self.received_checksum, \
+            self.id, \
+            self.sequence_number = struct.unpack("!BBHHH", raw[:8])
+        self.payload = raw[8:]

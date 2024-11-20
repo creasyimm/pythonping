@@ -6,9 +6,9 @@ import time
 class Socket:
     DONT_FRAGMENT = (socket.SOL_IP, 10, 1)           # Option value for raw socket
     PROTO_LOOKUP = {"icmp": socket.IPPROTO_ICMP, "tcp": socket.IPPROTO_TCP, "udp": socket.IPPROTO_UDP,
-                    "ip": socket.IPPROTO_IP, "raw": socket.IPPROTO_RAW}
+                    "ip": socket.IPPROTO_IP, "raw": socket.IPPROTO_RAW, "ipv6-icmp": socket.IPPROTO_ICMPV6}
 
-    def __init__(self, destination, protocol, options=(), buffer_size=2048, source=None):
+    def __init__(self, destination, protocol, options=(), buffer_size=2048, source=None, ipv6=False):
         """Creates a network socket to exchange messages
 
         :param destination: Destination IP address
@@ -21,15 +21,22 @@ class Socket:
         :type source: Union[None, str]
         :param buffer_size: Size in bytes of the listening buffer for incoming packets (replies)
         :type buffer_size: int"""
+        self.ipv6 = ipv6
         try:
-            self.destination = socket.gethostbyname(destination)
+            if self.ipv6:
+                info = socket.getaddrinfo(destination, None)[0]
+                self.destination = info[4][0]
+            else:
+                self.destination = socket.gethostbyname(destination)
         except socket.gaierror as e:
             raise RuntimeError('Cannot resolve address "' + destination + '", try verify your DNS or host file')
 
         self.protocol = Socket.getprotobyname(protocol)
         self.buffer_size = buffer_size
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, self.protocol)
         self.source = source
+        sock_af = socket.AF_INET6 if self.ipv6 else socket.AF_INET
+
+        self.socket = socket.socket(sock_af, socket.SOCK_RAW, self.protocol)
         if options:
             self.socket.setsockopt(*options)
 
@@ -54,7 +61,10 @@ class Socket:
         :type packet: bytes"""
         if self.source:
             self.socket.bind((self.source, 0))
-        self.socket.sendto(packet, (self.destination, 0))
+        if self.ipv6:
+            self.socket.sendto(packet, (self.destination, 0, 0, 0))
+        else:
+            self.socket.sendto(packet, (self.destination, 0))
 
     def receive(self, timeout=2):
         """Listen for incoming packets until timeout

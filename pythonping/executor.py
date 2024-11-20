@@ -68,7 +68,7 @@ def represent_seconds_in_ms(seconds):
 
 class Response:
     """Represents a response to an ICMP message, with metadata like timing"""
-    def __init__(self, message, time_elapsed, source_request=None, repr_format=None):
+    def __init__(self, message, time_elapsed, source_request=None, repr_format=None, ipv6=False):
         """Creates a representation of ICMP message received in response
 
         :param message: The message received
@@ -80,6 +80,10 @@ class Response:
         :param repr_format: How to __repr__ the response. Allowed: legacy, None
         :type repr_format: str"""
         self.message = message
+        self.ipv6 = ipv6
+        if self.message:
+            self.type = self.message.packet.message_type
+            self.code = self.message.packet.message_code
         self.time_elapsed = time_elapsed
         self.source_request = source_request
         self.repr_format = repr_format
@@ -92,34 +96,56 @@ class Response:
     def error_message(self):
         if self.message is None:
             return 'No response'
-        if self.message.packet.message_type == 0 and self.message.packet.message_code == 0:
-            # Echo Reply, response OK - no error
-            return None
-        if self.message.packet.message_type == 3:
-            # Destination unreachable, returning more details based on message code
-            unreachable_messages = [
-                'Network Unreachable',
-                'Host Unreachable',
-                'Protocol Unreachable',
-                'Port Unreachable',
-                'Fragmentation Required',
-                'Source Route Failed',
-                'Network Unknown',
-                'Host Unknown',
-                'Source Host Isolated',
-                'Communication with Destination Network is Administratively Prohibited',
-                'Communication with Destination Host is Administratively Prohibited',
-                'Network Unreachable for ToS',
-                'Host Unreachable for ToS',
-                'Communication Administratively Prohibited',
-                'Host Precedence Violation',
-                'Precedence Cutoff in Effect'
-            ]
-            try:
-                return unreachable_messages[self.message.packet.message_code]
-            except IndexError:
-                # Should never generate IndexError, this serves as additional protection
-                return 'Unreachable'
+        if self.ipv6:
+            if self.type == icmp.ICMPv6Types.EchoReply.type_id and self.code == 0:
+                # Echo Reply, response OK - no error
+                return None
+        else:
+            if self.type == 0 and self.code == 0:
+                # Echo Reply, response OK - no error
+                return None
+
+        if self.ipv6:
+            icmpv6_errors = {
+                (1, 0): "No route to destination",
+                (1, 1): "Communication with destination administratively prohibited",
+                (1, 2): "Beyond scope of source address",
+                (1, 3): "Address unreachable",
+                (1, 4): "Port unreachable",
+                (2, 0): "Packet too big",
+                (3, 0): "Time exceeded - hop limit exceeded in transit",
+                (3, 1): "Time exceeded - fragment reassembly time exceeded",
+                (4, 0): "Parameter problem - erroneous header field",
+                (4, 1): "Parameter problem - unrecognized next header type",
+                (4, 2): "Parameter problem - unrecognized IPv6 option",
+            }
+            return icmpv6_errors.get((self.type, self.code), f"Unknown error: type={self.type} code={self.code}")
+        else:
+            if self.message.packet.message_type == 3:
+                # Destination unreachable, returning more details based on message code
+                unreachable_messages = [
+                    'Network Unreachable',
+                    'Host Unreachable',
+                    'Protocol Unreachable',
+                    'Port Unreachable',
+                    'Fragmentation Required',
+                    'Source Route Failed',
+                    'Network Unknown',
+                    'Host Unknown',
+                    'Source Host Isolated',
+                    'Communication with Destination Network is Administratively Prohibited',
+                    'Communication with Destination Host is Administratively Prohibited',
+                    'Network Unreachable for ToS',
+                    'Host Unreachable for ToS',
+                    'Communication Administratively Prohibited',
+                    'Host Precedence Violation',
+                    'Precedence Cutoff in Effect'
+                ]
+                try:
+                    return unreachable_messages[self.message.packet.message_code]
+                except IndexError:
+                    # Should never generate IndexError, this serves as additional protection
+                    return 'Unreachable'
         # Error was not identified
         return 'Network Error'
 
@@ -269,7 +295,7 @@ class ResponseList:
 class Communicator:
     """Instance actually communicating over the network, sending messages and handling responses"""
     def __init__(self, target, payload_provider, timeout, interval, socket_options=(), seed_id=None,
-                 verbose=False, output=sys.stdout, source=None, repr_format=None):
+                 verbose=False, output=sys.stdout, source=None, repr_format=None, ipv6=False):
         """Creates an instance that can handle communication with the target device
 
         :param target: IP or hostname of the remote device
@@ -290,7 +316,9 @@ class Communicator:
         :type output: file
         :param repr_format: How to __repr__ the response. Allowed: legacy, None
         :type repr_format: str"""
-        self.socket = network.Socket(target, 'icmp', options=socket_options, source=source)
+        self.ipv6 = ipv6
+        proto = 'ipv6-icmp' if self.ipv6 else 'icmp'
+        self.socket = network.Socket(target, proto, options=socket_options, source=source, ipv6=ipv6)
         self.provider = payload_provider
         self.timeout = timeout
         self.interval = interval
@@ -314,10 +342,16 @@ class Communicator:
         :param payload: The payload of the ICMP message
         :type payload: Union[str, bytes]
         :rtype: ICMP"""
-        i = icmp.ICMP(
-            icmp.Types.EchoRequest,
-            payload=payload,
-            identifier=packet_id, sequence_number=sequence_number)
+        if self.ipv6:
+            i = icmp.ICMPv6(
+                icmp.ICMPv6Types.EchoRequest.type_id,
+                payload=payload,
+                identifier=packet_id, sequence_number=sequence_number)
+        else:
+            i = icmp.ICMP(
+                icmp.Types.EchoRequest,
+                payload=payload,
+                identifier=packet_id, sequence_number=sequence_number)
         self.socket.send(i.packet)
         return i
 
@@ -333,16 +367,19 @@ class Communicator:
         :return: The response to the request with the specified packet_id
         :rtype: Response"""
         time_left = timeout
-        response = icmp.ICMP()
+        if self.ipv6:
+            response = icmp.ICMPv6()
+        else:
+            response = icmp.ICMP()
         while time_left > 0:
             # Keep listening until a packet arrives
             raw_packet, source_socket, time_left = self.socket.receive(time_left)
             # If we actually received something
             if raw_packet != b'':
                 response.unpack(raw_packet)
-
+                type_id = icmp.ICMPv6Types.EchoRequest.type_id if self.ipv6 else icmp.Types.EchoRequest.type_id
                 # Ensure we have not unpacked the packet we sent (RHEL will also listen to outgoing packets)
-                if response.id == packet_id and response.message_type != icmp.Types.EchoRequest.type_id:
+                if response.id == packet_id and response.message_type != type_id:
                     if payload_pattern is None:
                         # To allow Windows-like behaviour (no payload inspection, but only match packet identifiers),
                         # simply allow for it to be an always true in the legacy usage case
@@ -351,8 +388,9 @@ class Communicator:
                         payload_matched = (payload_pattern == response.payload)
 
                     if payload_matched:
-                        return Response(Message('', response, source_socket[0]), timeout - time_left, source_request, repr_format=self.repr_format)
-        return Response(None, timeout, source_request, repr_format=self.repr_format)
+                        return Response(Message('', response, source_socket[0]), timeout - time_left, source_request, 
+                                        repr_format=self.repr_format, ipv6=self.ipv6)
+        return Response(None, timeout, source_request, repr_format=self.repr_format, ipv6=self.ipv6)
 
     @staticmethod
     def increase_seq(sequence_number):
